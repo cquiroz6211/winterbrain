@@ -1,0 +1,26 @@
+services:
+  winterbrain:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: winterbrain:local
+    container_name: winterbrain
+    restart: unless-stopped
+    ports:
+      - "3131:3131"
+    environment:
+      NODE_ENV: production
+      MCP_SERVER_NAME: winterbrain
+      MCP_SERVER_VERSION: 0.1.0
+      MCP_TRANSPORT: stdio
+      BRAIN_DATA_DIR: /app/brain
+    volumes:
+      - winterbrain-data:/app/brain
+    healthcheck:
+      test: ["CMD", "node", "-e", "process.exit(0)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  winterbrain-data:
