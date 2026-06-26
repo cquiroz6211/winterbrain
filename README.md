@@ -34,6 +34,13 @@ Los usuarios no deberían pensar en carpetas ni bases de datos. Desde Claude o C
 - “Qué debemos priorizar en Cliente X en base a la reunión que subió Sergio?”
 - “Resumí los aprendizajes recientes sobre startups de healthtech.”
 
+### Instalación rápida para usuarios no técnicos
+
+El CEO, el CFO o cualquier director no necesitan instalar Node, ni clonar el repo, ni tocar archivos de configuración a mano. La guía completa está en:
+
+- `docs/QUICKSTART.md` — pasos en lenguaje humano.
+- `INSTALL_FOR_USERS.md` — instrucciones que el propio agente del usuario sigue para dejar todo conectado.
+
 ## Herramientas MCP iniciales
 
 El servidor registra cuatro herramientas placeholder:
