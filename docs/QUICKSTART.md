@@ -51,6 +51,31 @@ Tu no ves carpetas, archivos, ni bases de datos. Solo decis una frase en espanol
 
 ---
 
+### Subir una carpeta entera de un cliente
+
+Cuando Sergio tiene una carpeta `Cliente X` con reuniones, briefs y decks, puede decir:
+
+```text
+Sube la carpeta "C:\Users\...\Cliente X" al cerebro para cliente-x.
+```
+
+El MCP `ingest_folder` hace:
+
+1. Copia todos los archivos a `brain/raw/<timestamp>-<cliente>/`.
+2. Para cada PDF/DOCX/PPTX/XLSX los convierte a Markdown con MarkItDown y los guarda en `brain/markdown/<timestamp>-<cliente>/`.
+3. Genera un manifest en `brain/knowledge/decisions/` con la lista completa de archivos ingestados, convertidos, errores y skipped.
+4. Devuelve el resumen al agente.
+
+Después Mariana puede preguntar:
+
+```text
+Qué aprendimos del inversionista de cliente-x?
+```
+
+Y `ask_brain` busca los Markdown resultantes y devuelve las coincidencias con score.
+
+---
+
 ## Si algo falla
 
 Manda este mensaje a tu agente:

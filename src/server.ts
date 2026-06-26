@@ -6,6 +6,7 @@ import {
   brainFolders,
   buildKnowledgeFileName,
   ensureBrainFolders,
+  ingestFolder,
   readKnowledgeMarkdownFiles,
   writeMarkdownFile,
 } from './paths.js';
@@ -159,6 +160,36 @@ server.registerTool(
     const knowledgePath = await writeMarkdownFile(brainFolders.meetings, fileName, knowledgeMarkdown);
 
     return textResponse(`Saved meeting markdown to ${markdownPath}\nSaved meeting knowledge record to ${knowledgePath}`);
+  },
+);
+
+server.registerTool(
+  'ingest_folder',
+  {
+    title: 'Ingest Folder',
+    description:
+      'Ingest an entire folder of meetings, briefs, decks, transcripts, or notes for a client. Text files are copied into the brain; binary files (PDF, DOCX, PPTX, images, audio) are queued for MarkItDown normalization in a later phase.',
+    inputSchema: {
+      sourceFolder: z.string().min(1).describe('Absolute or project-relative path to the folder to ingest.'),
+      client: z.string().optional().describe('Client or startup name this folder belongs to.'),
+      uploadedBy: z.string().optional().describe('Person uploading the folder.'),
+      notes: z.string().optional().describe('Optional context about this folder.'),
+    },
+  },
+  async ({ sourceFolder, client, uploadedBy, notes }) => {
+    try {
+      const result = await ingestFolder({ sourceFolder, client, uploadedBy, notes });
+      const summary = [
+        `Ingested ${result.fileCount} files from ${result.sourceFolder}.`,
+        `Text files: ${result.textFiles.length}.`,
+        `Binary files: ${result.binaryFiles.length} (awaiting MarkItDown normalization).`,
+        `Manifest: ${result.manifestPath}`,
+      ].join('\n');
+      return textResponse(summary);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return textResponse(`Failed to ingest folder ${sourceFolder}: ${message}`);
+    }
   },
 );
 
