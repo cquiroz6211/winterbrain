@@ -35,6 +35,10 @@ COPY --from=builder /app/dist ./dist
 
 RUN mkdir -p /app/brain/raw /app/brain/markdown /app/brain/knowledge/meetings /app/brain/knowledge/chats /app/brain/knowledge/decisions
 
+ENV MCP_TRANSPORT=http \
+    PORT=3131 \
+    NODE_ENV=production
+
 VOLUME ["/app/brain"]
 EXPOSE 3131
 

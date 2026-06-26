@@ -4,10 +4,29 @@ Winterbrain es una imagen Docker standalone lista para correr en Dokploy como un
 
 ## Imagen y servicio
 
-- Build: multi-stage `node:22-alpine` con tini.
-- Runtime: `node dist/server.js` hablando MCP por **stdio** (hoy).
-- Puerto HTTP expuesto: `3131` (reservado para cuando se sume transporte HTTP MCP).
+- Build: multi-stage `node:22-bookworm-slim` con tini + Python + MarkItDown oficial.
+- Runtime: `node dist/server.js` hablando MCP por **HTTP con autenticacion Bearer** (default) o **stdio** (debug).
+- Puerto HTTP expuesto: `3131`.
 - Volumen persistente: `/app/brain` (Markdown + knowledge).
+
+## Variables de entorno para Dokploy
+
+```bash
+MCP_TRANSPORT=http
+PORT=3131
+WINTERBRAIN_PUBLIC_URL=https://brain.winterkpital.com
+WINTERBRAIN_TOKENS=serge_token_sergio:sergio|tools|2592000,marina_token_mariana:marina|tools|2592000,ceo_token_dario:dario|tools|31536000
+```
+
+Los tokens se emiten uno por usuario (CEO, CFO, Mariana, Sergio, etc.) y van como `Authorization: Bearer <token>` desde el cliente MCP.
+
+## Generar tokens seguros
+
+```bash
+node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
+```
+
+Ejemplo de token: `a4f9...e2c1`. Se guarda como `token:userId|scope|ttlSeconds` dentro de `WINTERBRAIN_TOKENS`.
 
 ## Opcion 1. Dokploy con GitHub
 

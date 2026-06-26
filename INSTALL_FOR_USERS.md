@@ -17,9 +17,11 @@ No instales Node, ni clones el repo en la maquina del usuario todavia. Eso es re
 
 ## Step 1. Decide el camino segun el cliente
 
-### Path A. Claude Desktop (Mac/Windows)
+Winterbrain expone un servidor MCP HTTP con autenticacion Bearer. Cada usuario tiene su propio token emitido por el administrador.
 
-Agrega esta entrada a `claude_desktop_config.json`:
+### Path A. Claude Desktop (HTTP remoto)
+
+Editar `claude_desktop_config.json`:
 
 - Mac: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
@@ -28,56 +30,41 @@ Agrega esta entrada a `claude_desktop_config.json`:
 {
   "mcpServers": {
     "winterbrain": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "github:cquiroz6211/winterbrain"
-      ],
-      "env": {
-        "WINTERBRAIN_URL": "https://brain.winterkpital.com/mcp",
-        "WINTERBRAIN_TOKEN": "<token del usuario>"
+      "url": "https://brain.winterkpital.com/mcp",
+      "headers": {
+        "Authorization": "Bearer <token del usuario>"
       }
     }
   }
 }
 ```
 
-Si el archivo ya tiene contenido, conserva las claves existentes y agrega solo la entrada `winterbrain`.
-
-### Path B. Claude Code (CLI)
+### Path B. Claude Code (HTTP remoto)
 
 ```bash
-claude mcp add winterbrain \
-  --command npx \
-  --args "-y github:cquiroz6211/winterbrain" \
-  --env WINTERBRAIN_URL=https://brain.winterkpital.com/mcp \
-  --env WINTERBRAIN_TOKEN=<token del usuario>
+claude mcp add --transport http winterbrain https://brain.winterkpital.com/mcp \
+  --header "Authorization: Bearer <token del usuario>"
 ```
 
-### Path C. Codex CLI
+### Path C. Codex CLI (HTTP remoto)
 
 ```bash
-codex mcp add winterbrain \
-  --command npx \
-  --args "-y github:cquiroz6211/winterbrain" \
-  --env WINTERBRAIN_URL=https://brain.winterkpital.com/mcp \
-  --env WINTERBRAIN_TOKEN=<token del usuario>
+codex mcp add winterbrain --url https://brain.winterkpital.com/mcp \
+  --bearer-token "<token del usuario>"
 ```
 
-### Path D. OpenCode
+### Path D. OpenCode (HTTP remoto)
 
-Editar `~/.config/opencode/opencode.json` y agregar en `mcp`:
+Editar `~/.config/opencode/opencode.json`:
 
 ```jsonc
 {
   "mcp": {
     "winterbrain": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "github:cquiroz6211/winterbrain"],
-      "env": {
-        "WINTERBRAIN_URL": "https://brain.winterkpital.com/mcp",
-        "WINTERBRAIN_TOKEN": "<token del usuario>"
+      "type": "http",
+      "url": "https://brain.winterkpital.com/mcp",
+      "headers": {
+        "Authorization": "Bearer <token del usuario>"
       }
     }
   }
