@@ -75,10 +75,8 @@ src/                   # Gateway MCP TypeScript
 
 ## Próximo foco
 
-El próximo paso no es construir un sistema enorme. Es probar el ciclo completo con pocos documentos reales:
+El roadmap completo vive en `ROADMAP.md`. El próximo paso inmediato es:
 
-1. subir una reunión,
-2. convertirla a Markdown,
-3. extraer conocimiento útil,
-4. preguntar prioridades por cliente/startup,
-5. ajustar el formato hasta que el equipo lo use sin fricción.
+1. desplegar en Dokploy (Fase 1),
+2. migrar el gateway a HTTP MCP (Fase 2),
+3. cargar la primera reunión real y validar el ciclo completo.
