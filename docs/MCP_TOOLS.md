@@ -11,7 +11,7 @@ Winterbrain supports two transports, selected by `MCP_TRANSPORT`:
 | stdio | `stdio` (default) | Local debug, container launched by the same agent process |
 | HTTP | `http` | Remote access for C-levels without local installs. Dokploy deploy. |
 
-When HTTP is selected, additional env vars apply: `PORT` (default 3131), `WINTERBRAIN_PUBLIC_URL`, `WINTERBRAIN_TOKENS`, `WINTERBRAIN_DB_URL`, `WINTERBRAIN_ADMIN_TOKEN`, `WINTERBRAIN_INSTALL_LINK_SECRET`, `WINTERBRAIN_ALLOW_ANONYMOUS`.
+When HTTP is selected, additional env vars apply: `PORT` (default 3131), `WINTERBRAIN_PUBLIC_URL`, `WINTERBRAIN_TOKENS`, `WINTERBRAIN_DB_URL`, `WINTERBRAIN_ADMIN_TOKEN`, `WINTERBRAIN_ADMIN_COOKIE_SECRET`, `WINTERBRAIN_INSTALL_LINK_SECRET`, `WINTERBRAIN_ALLOW_ANONYMOUS`.
 
 ## Endpoints (HTTP mode)
 
@@ -22,7 +22,12 @@ When HTTP is selected, additional env vars apply: `PORT` (default 3131), `WINTER
 | `DELETE` | `/mcp` | Terminate an existing session. Requires `mcp-session-id` header. |
 | `GET` | `/health` | Healthcheck for Dokploy. Returns JSON with status and active session count. |
 | `GET` | `/.well-known/oauth-protected-resource` | OAuth 2.0 Protected Resource Metadata. |
-| `GET` | `/admin` | Self-contained token admin page. Available only when `WINTERBRAIN_DB_URL` and `WINTERBRAIN_ADMIN_TOKEN` are set. |
+| `GET` | `/admin` | Server-rendered token admin page. Available only when `WINTERBRAIN_DB_URL`, `WINTERBRAIN_ADMIN_TOKEN`, and `WINTERBRAIN_ADMIN_COOKIE_SECRET` are set. |
+| `POST` | `/admin/login` | Browser admin login. Accepts form field `admin_token` or `Authorization: Bearer <WINTERBRAIN_ADMIN_TOKEN>`, then sets an httpOnly signed cookie. |
+| `POST` | `/admin/logout` | Clears the browser admin cookie. |
+| `POST` | `/admin/tokens` | Browser form endpoint to issue a token. Requires valid admin cookie. Plain token appears once in a flash notice. |
+| `POST` | `/admin/tokens/:id/revoke` | Browser form endpoint to revoke a token. Requires valid admin cookie. |
+| `POST` | `/admin/tokens/:id/rotate` | Browser form endpoint to rotate a token. Requires valid admin cookie. Plain token appears once in a flash notice. |
 | `GET` | `/admin/api/health` | Admin API health. Requires `Authorization: Bearer <WINTERBRAIN_ADMIN_TOKEN>`. |
 | `GET` | `/admin/api/tokens` | List active Postgres-backed tokens. Plain tokens are never returned here. |
 | `POST` | `/admin/api/tokens` | Issue a token with `{ "user_id", "ttl_seconds", "label"? }`. Returns `plain_token` once. |
@@ -54,12 +59,12 @@ When HTTP is selected, additional env vars apply: `PORT` (default 3131), `WINTER
 
 ### Admin token flow
 
-1. Set `WINTERBRAIN_DB_URL` and `WINTERBRAIN_ADMIN_TOKEN`.
-2. Open `/admin` from a browser. The page is standalone HTML/CSS/JS and works on mobile.
-3. Paste the admin token. The page stores it in `localStorage` and uses it only as `Authorization: Bearer <admin-token>` for `/admin/api/*` calls.
+1. Set `WINTERBRAIN_DB_URL`, `WINTERBRAIN_ADMIN_TOKEN`, and `WINTERBRAIN_ADMIN_COOKIE_SECRET`.
+2. Open `/admin` from a browser. The page is server-rendered HTML and works without JavaScript.
+3. Paste the admin token. On success, the server sets a signed `winterbrain_admin` cookie with a 4-hour TTL. The cookie is httpOnly, SameSite=Lax, and Secure outside localhost.
 4. Issue a user token by entering `user_id`, `ttl_seconds`, and an optional label.
-5. Copy the plain token immediately. It is never stored in plaintext and will not be shown again.
-6. For non-technical users, copy the generated Spanish install message or use the per-row "Copiar link de instalación" button. The install page shows copy buttons for Claude Desktop, Claude Code, and Codex CLI without exposing backend jargon.
+5. Copy the plain token immediately from the yellow one-shot notice. It is carried only through an httpOnly flash cookie, never stored in plaintext, and disappears on the next `/admin` load.
+6. For non-technical users, copy the generated Spanish install link or use the per-row "Link instalacion" form. JavaScript only enhances the copy button; selecting and copying the `<pre>` block works everywhere.
 7. Use rotate to issue a replacement token for the same user. The previous token stays valid for 24 hours to avoid breaking active sessions.
 8. Use revoke to immediately invalidate a token.
 
@@ -71,6 +76,8 @@ When HTTP is selected, additional env vars apply: `PORT` (default 3131), `WINTER
 4. The user opens the link and clicks the copy button for their app.
 
 Security note: an install link grants the same access as the bearer token inside it. Treat it like a password and revoke or rotate the token after setup if the link may have been forwarded.
+
+If `WINTERBRAIN_ADMIN_TOKEN` is set but `WINTERBRAIN_ADMIN_COOKIE_SECRET` is missing, the server logs a warning and disables the browser `/admin` page. The bearer-auth `/admin/api/*` endpoints remain available for curl and automation.
 
 ## Tool contract summary
 

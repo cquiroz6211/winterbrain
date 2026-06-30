@@ -61,6 +61,7 @@ Razon: hoy el gateway hablaba stdio. Cada C-level necesitaba correr un subproces
 - [x] `INSTALL_FOR_USERS.md` actualizado con bloques HTTP para Claude Desktop, Claude Code, Codex CLI, OpenCode.
 - [x] Backend de tokens en Postgres (`winterbrain_tokens`) con migracion automatica cuando `WINTERBRAIN_DB_URL` esta configurado.
 - [x] Admin page `/admin` + API `/admin/api/*` para listar, emitir, rotar y revocar tokens sin guardar plaintext.
+- [x] Admin `/admin` renderizado en servidor con login por cookie firmada httpOnly; ya no depende de JavaScript para listar, emitir, rotar o revocar tokens.
 - [x] Fallback compatible: `WINTERBRAIN_TOKENS` sigue funcionando cuando no hay `WINTERBRAIN_DB_URL`.
 - [ ] Rate limiting basico (pendiente).
 - [ ] Logs estructurados con request id / user / tool / duracion (pendiente).
@@ -173,6 +174,7 @@ Preguntas de validacion:
 - **2026-06-26** Descubierto: el usuario objetivo son C-levels (CEO, CFO, director de inversiones). Las herramientas MCP deben hablar lenguaje de negocio, no primitives tecnicos.
 - **2026-06-30** Decidido: `WINTERBRAIN_DB_URL` activa un token store Postgres con hashes SHA-256 y admin page; `WINTERBRAIN_TOKENS` queda como fallback compatible.
 - **2026-06-30** Mejora: admin page emite mensajes de instalacion para C-levels y `/install/<token>`; los links firmados requieren `WINTERBRAIN_INSTALL_LINK_SECRET` y expiran en 24h. No cambia el modelo de scopes.
+- **2026-06-30** Fix: `/admin` paso a server-rendered forms con cookie `winterbrain_admin` firmada por HMAC-SHA256; la lista de tokens aparece despues del login aunque JavaScript este deshabilitado.
 
 ## Backlog de ideas (no priorizadas)
 

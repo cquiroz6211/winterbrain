@@ -8,7 +8,7 @@ import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middlew
 import { InvalidTokenError } from '@modelcontextprotocol/sdk/server/auth/errors.js';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 import { formatBearerChallenge, loadAuthStore, type AuthIdentity } from './auth.js';
-import { extractTokenId, hashPlainToken, type TokenStore, type TokenVerificationSnapshotItem } from './db.js';
+import { extractTokenId, hashPlainToken, type TokenListItem, type TokenStore, type TokenVerificationSnapshotItem } from './db.js';
 
 export interface HttpGatewayOptions {
   port: number;
@@ -16,6 +16,7 @@ export interface HttpGatewayOptions {
   tokensRaw: string | undefined;
   dbUrl: string | undefined;
   adminToken: string | undefined;
+  adminCookieSecret: string | undefined;
   installLinkSecret: string | undefined;
   allowAnonymous: boolean;
 }
@@ -114,6 +115,7 @@ export async function startHttpGateway(
 
   mountAdminRoutes(app, {
     adminToken: options.adminToken,
+    adminCookieSecret: options.adminCookieSecret,
     tokenStore,
     publicUrl: options.publicUrl,
     installLinkSecret: options.installLinkSecret,
@@ -289,6 +291,7 @@ function verifyFromTokenCache(token: string, tokenCache: TokenCache, tokenStore:
 
 interface AdminRouteOptions {
   adminToken: string | undefined;
+  adminCookieSecret: string | undefined;
   tokenStore: TokenStore | null;
   publicUrl: string;
   installLinkSecret: string | undefined;
@@ -305,11 +308,12 @@ function mountAdminRoutes(app: express.Express, options: AdminRouteOptions): voi
     return;
   }
   const adminToken = options.adminToken;
+  const adminCookieSecret = options.adminCookieSecret;
   const tokenStore = options.tokenStore;
 
-  app.get('/admin', (_req: Request, res: Response) => {
-    res.type('html').send(renderAdminHtml(options.publicUrl));
-  });
+  if (!adminCookieSecret) {
+    console.error('[admin] WINTERBRAIN_ADMIN_TOKEN is set but WINTERBRAIN_ADMIN_COOKIE_SECRET is missing. Server-rendered /admin is disabled; /admin/api remains available with bearer auth.');
+  }
 
   const api = express.Router();
   api.use(express.json({ limit: '32kb' }));
@@ -416,6 +420,298 @@ function mountAdminRoutes(app: express.Express, options: AdminRouteOptions): voi
   });
 
   app.use('/admin/api', api);
+
+  if (!adminCookieSecret) {
+    app.use('/admin', (_req: Request, res: Response) => {
+      res.status(404).send('Not found');
+    });
+    return;
+  }
+
+  const admin = express.Router();
+  admin.use(express.urlencoded({ extended: false, limit: '32kb' }));
+
+  admin.get('/', async (req: Request, res: Response) => {
+    const session = readAdminSession(req, adminCookieSecret);
+    if (!session) {
+      res.type('html').send(renderAdminLoginHtml());
+      return;
+    }
+
+    const flash = readFlashCookie(req, adminCookieSecret);
+    if (flash) {
+      clearAdminCookie(res, ADMIN_FLASH_COOKIE_NAME, options.publicUrl);
+    }
+
+    try {
+      const tokens = await tokenStore.list();
+      res.type('html').send(renderAdminDashboardHtml({
+        publicUrl: options.publicUrl,
+        tokens,
+        flash,
+      }));
+    } catch (error) {
+      console.error('[admin] failed to render dashboard:', error instanceof Error ? error.stack : String(error));
+      res.status(500).type('html').send(renderAdminDashboardHtml({
+        publicUrl: options.publicUrl,
+        tokens: [],
+        flash: { type: 'error', message: 'No se pudo cargar la lista de tokens.' },
+      }));
+    }
+  });
+
+  admin.post('/login', (req: Request, res: Response) => {
+    const submittedToken = extractBearerToken(req) ?? readString(req.body?.admin_token);
+    if (!submittedToken || !secureCompare(submittedToken, adminToken)) {
+      res.status(401).type('html').send(renderAdminLoginHtml('Token invalido'));
+      return;
+    }
+
+    setAdminSessionCookie(res, adminCookieSecret, options.publicUrl);
+    res.redirect(303, '/admin');
+  });
+
+  admin.post('/logout', (req: Request, res: Response) => {
+    if (!requireAdminSession(req, res, adminCookieSecret, options.publicUrl)) return;
+    clearAdminCookie(res, ADMIN_SESSION_COOKIE_NAME, options.publicUrl);
+    clearAdminCookie(res, ADMIN_FLASH_COOKIE_NAME, options.publicUrl);
+    res.redirect(303, '/admin');
+  });
+
+  admin.post('/tokens', async (req: Request, res: Response) => {
+    if (!requireAdminSession(req, res, adminCookieSecret, options.publicUrl)) return;
+    try {
+      const userId = readString(req.body?.user_id);
+      const ttlSeconds = readPositiveInteger(req.body?.ttl_seconds);
+      const label = readOptionalString(req.body?.label);
+
+      if (!userId || !ttlSeconds) {
+        setFlashCookie(res, adminCookieSecret, options.publicUrl, { type: 'error', message: 'user_id y ttl_seconds son obligatorios.' });
+        res.redirect(303, '/admin');
+        return;
+      }
+
+      const plainToken = await tokenStore.issue(userId, ttlSeconds, label);
+      await saveInstallLinkTokenIfConfigured(tokenStore, plainToken, options.installLinkSecret);
+      await options.refreshTokenCache();
+      setFlashCookie(res, adminCookieSecret, options.publicUrl, { type: 'token', message: 'Token emitido. Copialo ahora: se muestra una sola vez.', plainToken });
+      res.redirect(303, '/admin');
+    } catch (error) {
+      console.error('[admin] issue token failed:', error instanceof Error ? error.stack : String(error));
+      setFlashCookie(res, adminCookieSecret, options.publicUrl, { type: 'error', message: 'No se pudo emitir el token.' });
+      res.redirect(303, '/admin');
+    }
+  });
+
+  admin.post('/tokens/:id/revoke', async (req: Request, res: Response) => {
+    if (!requireAdminSession(req, res, adminCookieSecret, options.publicUrl)) return;
+    try {
+      const id = readRouteParam(req.params.id);
+      const revoked = await tokenStore.revoke(id);
+      await options.refreshTokenCache();
+      setFlashCookie(res, adminCookieSecret, options.publicUrl, revoked
+        ? { type: 'success', message: 'Token revocado.' }
+        : { type: 'error', message: 'Token no encontrado o ya revocado.' });
+      res.redirect(303, '/admin');
+    } catch (error) {
+      console.error('[admin] revoke token failed:', error instanceof Error ? error.stack : String(error));
+      setFlashCookie(res, adminCookieSecret, options.publicUrl, { type: 'error', message: 'No se pudo revocar el token.' });
+      res.redirect(303, '/admin');
+    }
+  });
+
+  admin.post('/tokens/:id/rotate', async (req: Request, res: Response) => {
+    if (!requireAdminSession(req, res, adminCookieSecret, options.publicUrl)) return;
+    try {
+      const oldId = readRouteParam(req.params.id);
+      const ttlSeconds = req.body?.ttl_seconds === undefined || req.body.ttl_seconds === '' ? undefined : readPositiveInteger(req.body.ttl_seconds);
+      if (req.body?.ttl_seconds !== undefined && req.body.ttl_seconds !== '' && !ttlSeconds) {
+        setFlashCookie(res, adminCookieSecret, options.publicUrl, { type: 'error', message: 'ttl_seconds debe ser un entero positivo.' });
+        res.redirect(303, '/admin');
+        return;
+      }
+
+      const plainToken = await tokenStore.rotate(oldId, ttlSeconds);
+      await options.refreshTokenCache();
+      if (!plainToken) {
+        setFlashCookie(res, adminCookieSecret, options.publicUrl, { type: 'error', message: 'Token no encontrado o ya revocado.' });
+        res.redirect(303, '/admin');
+        return;
+      }
+
+      await saveInstallLinkTokenIfConfigured(tokenStore, plainToken, options.installLinkSecret);
+      setFlashCookie(res, adminCookieSecret, options.publicUrl, { type: 'token', message: 'Token rotado. Copialo ahora: se muestra una sola vez.', plainToken });
+      res.redirect(303, '/admin');
+    } catch (error) {
+      console.error('[admin] rotate token failed:', error instanceof Error ? error.stack : String(error));
+      setFlashCookie(res, adminCookieSecret, options.publicUrl, { type: 'error', message: 'No se pudo rotar el token.' });
+      res.redirect(303, '/admin');
+    }
+  });
+
+  admin.post('/tokens/:id/install-link', async (req: Request, res: Response) => {
+    if (!requireAdminSession(req, res, adminCookieSecret, options.publicUrl)) return;
+    try {
+      if (!options.installLinkSecret) {
+        setFlashCookie(res, adminCookieSecret, options.publicUrl, { type: 'error', message: 'WINTERBRAIN_INSTALL_LINK_SECRET no esta configurado.' });
+        res.redirect(303, '/admin');
+        return;
+      }
+
+      const id = readRouteParam(req.params.id);
+      const installToken = await tokenStore.getInstallLinkToken(id);
+      if (!installToken) {
+        setFlashCookie(res, adminCookieSecret, options.publicUrl, { type: 'error', message: 'Link de instalacion no disponible o expirado.' });
+        res.redirect(303, '/admin');
+        return;
+      }
+
+      setFlashCookie(res, adminCookieSecret, options.publicUrl, { type: 'install_link', message: 'Link de instalacion listo para copiar.', installLink: buildInstallUrl(options.publicUrl, installToken) });
+      res.redirect(303, '/admin');
+    } catch (error) {
+      console.error('[admin] install link failed:', error instanceof Error ? error.stack : String(error));
+      setFlashCookie(res, adminCookieSecret, options.publicUrl, { type: 'error', message: 'No se pudo crear el link de instalacion.' });
+      res.redirect(303, '/admin');
+    }
+  });
+
+  app.use('/admin', admin);
+}
+
+const ADMIN_SESSION_COOKIE_NAME = 'winterbrain_admin';
+const ADMIN_FLASH_COOKIE_NAME = 'winterbrain_admin_flash';
+const ADMIN_SESSION_TTL_SECONDS = 60 * 60 * 4;
+const MAX_FLASH_COOKIE_BYTES = 4096;
+
+interface AdminSessionPayload {
+  user: 'admin';
+  exp: number;
+}
+
+type AdminFlashPayload =
+  | { type: 'success'; message: string }
+  | { type: 'error'; message: string }
+  | { type: 'token'; message: string; plainToken: string }
+  | { type: 'install_link'; message: string; installLink: string };
+
+function setAdminSessionCookie(res: Response, secret: string, publicUrl: string): void {
+  const payload: AdminSessionPayload = { user: 'admin', exp: Math.floor(Date.now() / 1000) + ADMIN_SESSION_TTL_SECONDS };
+  setSignedCookie(res, ADMIN_SESSION_COOKIE_NAME, payload, secret, publicUrl, ADMIN_SESSION_TTL_SECONDS);
+}
+
+function readAdminSession(req: Request, secret: string): AdminSessionPayload | null {
+  const payload = readSignedCookie<AdminSessionPayload>(req, ADMIN_SESSION_COOKIE_NAME, secret);
+  if (!payload || payload.user !== 'admin') return null;
+  if (!Number.isInteger(payload.exp) || payload.exp <= Math.floor(Date.now() / 1000)) return null;
+  return payload;
+}
+
+function requireAdminSession(req: Request, res: Response, secret: string, publicUrl: string): boolean {
+  if (readAdminSession(req, secret)) return true;
+  clearAdminCookie(res, ADMIN_SESSION_COOKIE_NAME, publicUrl);
+  res.redirect(303, '/admin');
+  return false;
+}
+
+function setFlashCookie(res: Response, secret: string, publicUrl: string, flash: AdminFlashPayload): void {
+  const cookieValue = createSignedCookieValue(flash, secret);
+  if (Buffer.byteLength(`${ADMIN_FLASH_COOKIE_NAME}=${cookieValue}`, 'utf8') > MAX_FLASH_COOKIE_BYTES) {
+    setSignedCookie(res, ADMIN_FLASH_COOKIE_NAME, { type: 'error', message: 'El mensaje temporal es demasiado grande para guardarlo.' }, secret, publicUrl, 60);
+    return;
+  }
+  setSignedCookie(res, ADMIN_FLASH_COOKIE_NAME, flash, secret, publicUrl, 60);
+}
+
+function readFlashCookie(req: Request, secret: string): AdminFlashPayload | null {
+  const payload = readSignedCookie<AdminFlashPayload>(req, ADMIN_FLASH_COOKIE_NAME, secret);
+  if (!payload || typeof payload.message !== 'string') return null;
+  if (payload.type === 'success' || payload.type === 'error') return payload;
+  if (payload.type === 'token' && typeof payload.plainToken === 'string') return payload;
+  if (payload.type === 'install_link' && typeof payload.installLink === 'string') return payload;
+  return null;
+}
+
+function setSignedCookie(res: Response, name: string, payload: unknown, secret: string, publicUrl: string, maxAgeSeconds: number): void {
+  res.append('Set-Cookie', serializeCookie(name, createSignedCookieValue(payload, secret), {
+    httpOnly: true,
+    sameSite: 'Lax',
+    path: '/admin',
+    maxAge: maxAgeSeconds,
+    secure: shouldUseSecureCookie(publicUrl),
+  }));
+}
+
+function clearAdminCookie(res: Response, name: string, publicUrl: string): void {
+  res.append('Set-Cookie', serializeCookie(name, '', {
+    httpOnly: true,
+    sameSite: 'Lax',
+    path: '/admin',
+    maxAge: 0,
+    secure: shouldUseSecureCookie(publicUrl),
+  }));
+}
+
+function createSignedCookieValue(payload: unknown, secret: string): string {
+  const encodedPayload = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  const signature = signHs256(encodedPayload, secret);
+  return `${encodedPayload}.${signature}`;
+}
+
+function readSignedCookie<T>(req: Request, name: string, secret: string): T | null {
+  const value = parseCookies(req.headers.cookie ?? '')[name];
+  if (!value) return null;
+  const parts = value.split('.');
+  if (parts.length !== 2) return null;
+  const [encodedPayload, signature] = parts;
+  if (!secureCompare(signature, signHs256(encodedPayload, secret))) return null;
+  try {
+    return JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8')) as T;
+  } catch {
+    return null;
+  }
+}
+
+function parseCookies(header: string): Record<string, string> {
+  const cookies: Record<string, string> = {};
+  for (const part of header.split(';')) {
+    const index = part.indexOf('=');
+    if (index === -1) continue;
+    const name = part.slice(0, index).trim();
+    const value = part.slice(index + 1).trim();
+    if (!name) continue;
+    cookies[name] = decodeURIComponent(value);
+  }
+  return cookies;
+}
+
+function shouldUseSecureCookie(publicUrl: string): boolean {
+  try {
+    const hostname = new URL(publicUrl).hostname.toLowerCase();
+    return !['localhost', '127.0.0.1', '::1'].includes(hostname);
+  } catch {
+    return true;
+  }
+}
+
+interface CookieOptions {
+  httpOnly: boolean;
+  sameSite: 'Lax';
+  path: string;
+  maxAge: number;
+  secure: boolean;
+}
+
+function serializeCookie(name: string, value: string, options: CookieOptions): string {
+  const parts = [
+    `${name}=${encodeURIComponent(value)}`,
+    `Max-Age=${options.maxAge}`,
+    `Path=${options.path}`,
+    `SameSite=${options.sameSite}`,
+  ];
+  if (options.httpOnly) parts.push('HttpOnly');
+  if (options.secure) parts.push('Secure');
+  if (options.maxAge === 0) parts.push('Expires=Thu, 01 Jan 1970 00:00:00 GMT');
+  return parts.join('; ');
 }
 
 function adminBearerAuth(expectedToken: string) {
@@ -439,8 +735,12 @@ function extractBearerToken(req: Request): string | null {
 function secureCompare(actual: string, expected: string): boolean {
   const actualBuffer = Buffer.from(actual);
   const expectedBuffer = Buffer.from(expected);
-  if (actualBuffer.length !== expectedBuffer.length) return false;
-  return timingSafeEqual(actualBuffer, expectedBuffer);
+  const length = Math.max(actualBuffer.length, expectedBuffer.length, 1);
+  const paddedActual = Buffer.alloc(length);
+  const paddedExpected = Buffer.alloc(length);
+  actualBuffer.copy(paddedActual);
+  expectedBuffer.copy(paddedExpected);
+  return timingSafeEqual(paddedActual, paddedExpected) && actualBuffer.length === expectedBuffer.length;
 }
 
 async function safeActiveTokenCount(tokenStore: TokenStore, fallback: number): Promise<number> {
@@ -673,246 +973,181 @@ function renderInstallHtml(publicUrl: string, plainToken: string): string {
 </html>`;
 }
 
-function renderAdminHtml(publicUrl: string): string {
+interface AdminDashboardViewModel {
+  publicUrl: string;
+  tokens: TokenListItem[];
+  flash: AdminFlashPayload | null;
+}
+
+function renderAdminLoginHtml(error?: string): string {
   return `<!doctype html>
-<html lang="en">
+<html lang="es">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Winterbrain Admin</title>
-  <style>
-    :root { color-scheme: light dark; font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { margin: 0; background: #0f172a; color: #e2e8f0; }
-    main { max-width: 960px; margin: 0 auto; padding: 24px 16px 48px; }
-    h1, h2 { margin: 0 0 12px; }
-    .card { background: #111827; border: 1px solid #334155; border-radius: 16px; padding: 16px; margin: 16px 0; box-shadow: 0 12px 40px rgb(0 0 0 / 0.25); }
-    label { display: block; font-size: 0.9rem; color: #cbd5e1; margin: 10px 0 6px; }
-    input, button { box-sizing: border-box; width: 100%; border-radius: 10px; border: 1px solid #475569; padding: 12px; font: inherit; }
-    input { background: #020617; color: #e2e8f0; }
-    button { cursor: pointer; background: #38bdf8; color: #082f49; border: 0; font-weight: 700; margin-top: 10px; }
-    button.secondary { background: #334155; color: #e2e8f0; }
-    button.danger { background: #fb7185; color: #450a0a; }
-    .row { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
-    .table-wrap { overflow-x: auto; }
-    table { border-collapse: collapse; width: 100%; min-width: 760px; }
-    th, td { border-bottom: 1px solid #334155; padding: 10px; text-align: left; vertical-align: top; }
-    th { color: #93c5fd; font-size: 0.85rem; }
-    .actions { display: flex; gap: 8px; flex-wrap: wrap; }
-    .actions button { width: auto; padding: 8px 10px; margin: 0; }
-    .token-box { background: #022c22; border: 1px solid #34d399; border-radius: 12px; padding: 12px; word-break: break-all; }
-    .copy-card { background: #020617; border: 1px solid #334155; border-radius: 12px; padding: 12px; margin-top: 12px; }
-    .copy-card h3 { margin: 0 0 8px; font-size: 1rem; color: #bfdbfe; }
-    pre.copy-box { white-space: pre-wrap; word-break: break-word; margin: 0; color: #e2e8f0; }
-    .warning { color: #facc15; font-weight: 700; }
-    .toast { color: #bbf7d0; background: #14532d; border: 1px solid #22c55e; border-radius: 10px; padding: 10px; }
-    .error { color: #fecaca; background: #7f1d1d; border: 1px solid #f87171; border-radius: 10px; padding: 10px; }
-    .muted { color: #94a3b8; }
-    .hidden { display: none; }
-  </style>
+  <style>${adminCss()}</style>
+</head>
+<body>
+  <main class="login-main">
+    <section class="card login-card">
+      <h1>Winterbrain Admin</h1>
+      <p class="muted">Pega el token admin</p>
+      ${error ? `<p class="error">${escapeHtml(error)}</p>` : ''}
+      <form method="POST" action="/admin/login">
+        <label class="sr-only" for="admin-token">Token admin</label>
+        <input id="admin-token" name="admin_token" type="password" autocomplete="current-password" required autofocus>
+        <button type="submit">Entrar</button>
+      </form>
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
+function renderAdminDashboardHtml({ publicUrl, tokens, flash }: AdminDashboardViewModel): string {
+  const flashHtml = flash ? renderAdminFlash(publicUrl, flash) : '';
+  const rows = tokens.map((token) => renderTokenRow(token)).join('') || '<tr><td colspan="7" class="muted">No hay tokens activos.</td></tr>';
+  return `<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Winterbrain Admin</title>
+  <style>${adminCss()}</style>
 </head>
 <body>
   <main>
-    <h1>Winterbrain Admin</h1>
-    <p class="muted">Manage MCP bearer tokens. Plain tokens are shown once after issue or rotation.</p>
+    <header class="page-header">
+      <div>
+        <h1>Winterbrain Admin</h1>
+        <p class="muted">Administra tokens MCP. Todo funciona sin JavaScript.</p>
+      </div>
+      <form method="POST" action="/admin/logout"><button class="secondary" type="submit">Salir</button></form>
+    </header>
 
-    <section id="login" class="card">
-      <h2>Admin login</h2>
-      <label for="admin-token">Admin token</label>
-      <input id="admin-token" type="password" autocomplete="current-password" placeholder="WINTERBRAIN_ADMIN_TOKEN">
-      <button id="save-token">Save token and load</button>
+    ${flashHtml}
+
+    <section class="card">
+      <h2>Emitir token</h2>
+      <form method="POST" action="/admin/tokens" class="grid-form">
+        <div><label for="user-id">Usuario</label><input id="user-id" name="user_id" placeholder="sergio" required></div>
+        <div><label for="ttl">TTL segundos</label><input id="ttl" name="ttl_seconds" type="number" min="1" value="3600" required></div>
+        <div><label for="label">Etiqueta</label><input id="label" name="label" placeholder="Sergio laptop"></div>
+        <button type="submit">Emitir token</button>
+      </form>
     </section>
 
-    <section id="app" class="hidden">
-      <div id="message"></div>
-
-      <section class="card">
-        <h2>Issue token</h2>
-        <div class="row">
-          <div><label for="user-id">User ID</label><input id="user-id" placeholder="sergio"></div>
-          <div><label for="ttl">TTL seconds</label><input id="ttl" type="number" min="1" value="3600"></div>
-          <div><label for="label">Label</label><input id="label" placeholder="Sergio phone"></div>
-        </div>
-        <button id="issue">Issue token</button>
-      </section>
-
-      <section id="plain-token-card" class="card hidden">
-        <h2>Plain token</h2>
-        <p class="warning">Copy this now. It will not be shown again.</p>
-        <div id="plain-token" class="token-box"></div>
-        <button id="copy-token" class="secondary">Copy token</button>
-      </section>
-
-      <section id="setup-card" class="card hidden">
-        <h2>Material para enviar al usuario</h2>
-        <p class="muted">Copiá el mensaje simple para WhatsApp o Slack. Los bloques técnicos quedan listos por si el cliente los pide.</p>
-        <div class="copy-card">
-          <h3>Mensaje para el usuario</h3>
-          <pre id="user-message" class="copy-box"></pre>
-          <button class="secondary" data-copy-target="user-message">Copiar</button>
-        </div>
-        <div class="copy-card">
-          <h3>Bloque JSON para Claude Desktop</h3>
-          <pre id="claude-desktop-json" class="copy-box"></pre>
-          <button class="secondary" data-copy-target="claude-desktop-json">Copiar</button>
-        </div>
-        <div class="copy-card">
-          <h3>Comando para Claude Code (terminal)</h3>
-          <pre id="claude-code-command" class="copy-box"></pre>
-          <button class="secondary" data-copy-target="claude-code-command">Copiar</button>
-        </div>
-        <div class="copy-card">
-          <h3>Comando para Codex CLI</h3>
-          <pre id="codex-command" class="copy-box"></pre>
-          <button class="secondary" data-copy-target="codex-command">Copiar</button>
-        </div>
-      </section>
-
-      <section class="card">
-        <h2>Active tokens</h2>
-        <button id="refresh" class="secondary">Refresh</button>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>User</th><th>Label</th><th>Created</th><th>Expires</th><th>Last used</th><th>Actions</th></tr></thead>
-            <tbody id="tokens"></tbody>
-          </table>
-        </div>
-      </section>
+    <section class="card">
+      <h2>Tokens activos</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>ID</th><th>Usuario</th><th>Etiqueta</th><th>Creado</th><th>Expira</th><th>Ultimo uso</th><th>Acciones</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
     </section>
   </main>
   <script>
-    const PUBLIC_URL = ${JSON.stringify(publicUrl)};
-    const tokenInput = document.getElementById('admin-token');
-    const login = document.getElementById('login');
-    const app = document.getElementById('app');
-    const message = document.getElementById('message');
-    const tbody = document.getElementById('tokens');
-    const plainCard = document.getElementById('plain-token-card');
-    const plainBox = document.getElementById('plain-token');
-    const setupCard = document.getElementById('setup-card');
-    const userMessage = document.getElementById('user-message');
-    const claudeDesktopJson = document.getElementById('claude-desktop-json');
-    const claudeCodeCommand = document.getElementById('claude-code-command');
-    const codexCommand = document.getElementById('codex-command');
-    tokenInput.value = localStorage.getItem('winterbrain_admin_token') || '';
-
-    function adminToken() { return localStorage.getItem('winterbrain_admin_token') || tokenInput.value; }
-    function showError(text) { message.innerHTML = '<div class="error">' + text + '</div>'; }
-    function showToast(text) { message.innerHTML = '<div class="toast">' + text + '</div>'; }
-    function clearMessage() { message.innerHTML = ''; }
-    function fmt(value) { return value ? new Date(value).toLocaleString() : '—'; }
-    function esc(value) { return String(value || '—').replace(/[&<>"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[char])); }
-    function publicRoot() { return PUBLIC_URL.replace(/\/$/, ''); }
-    function mcpUrl() { return publicRoot() + '/mcp'; }
-    function installUrlForToken(token) { return publicRoot() + '/install/' + encodeURIComponent(token); }
-    function shellQuote(value) { return '"' + String(value).replace(/(["\\$])/g, '\\$1') + '"'; }
-    async function copyText(text) {
-      await navigator.clipboard.writeText(text);
-      showToast('Copiado al portapapeles.');
-    }
-
-    async function api(path, options = {}) {
-      const response = await fetch('/admin/api' + path, {
-        ...options,
-        headers: {
-          'Authorization': 'Bearer ' + adminToken(),
-          'Content-Type': 'application/json',
-          ...(options.headers || {})
-        }
-      });
-      if (response.status === 401) throw new Error('Admin token is invalid. Check WINTERBRAIN_ADMIN_TOKEN.');
-      if (!response.ok) throw new Error((await response.json()).error || 'Request failed');
-      return response.json();
-    }
-
-    async function loadTokens() {
-      clearMessage();
-      try {
-        const data = await api('/tokens');
-        login.classList.add('hidden');
-        app.classList.remove('hidden');
-        tbody.innerHTML = data.tokens.map((token) => '<tr>' +
-          '<td>' + esc(token.user_id) + '</td>' +
-          '<td>' + esc(token.label) + '</td>' +
-          '<td>' + fmt(token.created_at) + '</td>' +
-          '<td>' + fmt(token.expires_at) + '</td>' +
-          '<td>' + fmt(token.last_used_at) + '</td>' +
-          '<td class="actions"><button class="secondary" data-install-link="' + token.id + '">Copiar link de instalación</button><button class="secondary" data-rotate="' + token.id + '">Rotate</button><button class="danger" data-revoke="' + token.id + '">Revoke</button></td>' +
-        '</tr>').join('') || '<tr><td colspan="6" class="muted">No active tokens yet.</td></tr>';
-      } catch (error) {
-        app.classList.remove('hidden');
-        showError(error.message);
-      }
-    }
-
-    function buildArtifacts(token) {
-      const installUrl = installUrlForToken(token);
-      return {
-        message: 'Winterbrain (cerebro de empresa) ya esta activo.\n\nPega esto en Claude o Codex y listo:\n\n' + installUrl + '\n\nEl link te configura el cerebro automaticamente.',
-        desktop: JSON.stringify({ mcpServers: { winterbrain: { url: mcpUrl(), headers: { Authorization: 'Bearer ' + token } } } }, null, 2),
-        claudeCode: 'claude mcp add --transport http winterbrain ' + shellQuote(mcpUrl()) + ' --header ' + shellQuote('Authorization: Bearer ' + token),
-        codex: 'codex mcp add winterbrain --url ' + shellQuote(mcpUrl()) + ' --bearer-token ' + shellQuote(token)
-      };
-    }
-
-    function showSetupBlocks(token) {
-      const artifacts = buildArtifacts(token);
-      userMessage.textContent = artifacts.message;
-      claudeDesktopJson.textContent = artifacts.desktop;
-      claudeCodeCommand.textContent = artifacts.claudeCode;
-      codexCommand.textContent = artifacts.codex;
-      setupCard.classList.remove('hidden');
-    }
-
-    function showPlainToken(value) {
-      plainBox.textContent = value;
-      plainCard.classList.remove('hidden');
-      showSetupBlocks(value);
-    }
-
-    document.getElementById('save-token').addEventListener('click', () => {
-      localStorage.setItem('winterbrain_admin_token', tokenInput.value);
-      loadTokens();
-    });
-    document.getElementById('refresh').addEventListener('click', loadTokens);
-    document.getElementById('copy-token').addEventListener('click', () => copyText(plainBox.textContent));
-    setupCard.addEventListener('click', async (event) => {
+    document.addEventListener('click', async (event) => {
       const button = event.target.closest('button[data-copy-target]');
       if (!button) return;
       const target = document.getElementById(button.dataset.copyTarget);
-      await copyText(target.textContent);
-    });
-    document.getElementById('issue').addEventListener('click', async () => {
+      if (!target) return;
       try {
-        const data = await api('/tokens', { method: 'POST', body: JSON.stringify({
-          user_id: document.getElementById('user-id').value,
-          ttl_seconds: Number(document.getElementById('ttl').value),
-          label: document.getElementById('label').value
-        }) });
-        showPlainToken(data.plain_token);
-        await loadTokens();
-      } catch (error) { showError(error.message); }
+        await navigator.clipboard.writeText(target.textContent);
+        button.textContent = 'Copiado';
+      } catch {
+        button.textContent = 'Selecciona y copia manualmente';
+      }
     });
-    tbody.addEventListener('click', async (event) => {
-      const button = event.target.closest('button');
-      if (!button) return;
-      try {
-        if (button.dataset.revoke) {
-          await api('/tokens/' + button.dataset.revoke + '/revoke', { method: 'POST', body: '{}' });
-        }
-        if (button.dataset.installLink) {
-          const data = await api('/tokens/' + button.dataset.installLink + '/install-link');
-          await copyText(data.link);
-          return;
-        }
-        if (button.dataset.rotate) {
-          const data = await api('/tokens/' + button.dataset.rotate + '/rotate', { method: 'POST', body: '{}' });
-          showPlainToken(data.plain_token);
-        }
-        await loadTokens();
-      } catch (error) { showError(error.message); }
-    });
-    if (tokenInput.value) loadTokens();
   </script>
 </body>
 </html>`;
+}
+
+function renderAdminFlash(publicUrl: string, flash: AdminFlashPayload): string {
+  if (flash.type === 'error') {
+    return `<section class="notice error"><p>${escapeHtml(flash.message)}</p></section>`;
+  }
+  if (flash.type === 'success') {
+    return `<section class="notice success"><p>${escapeHtml(flash.message)}</p></section>`;
+  }
+  if (flash.type === 'install_link') {
+    return `<section class="notice warning"><p>${escapeHtml(flash.message)}</p><pre id="install-link" class="copy-box">${escapeHtml(flash.installLink)}</pre><button class="secondary" type="button" data-copy-target="install-link">Copiar al portapapeles</button></section>`;
+  }
+
+  const artifacts = buildClientInstallArtifacts(publicUrl, flash.plainToken);
+  return `<section class="notice warning">
+    <p>${escapeHtml(flash.message)}</p>
+    <h2>Plain token</h2>
+    <pre id="plain-token" class="copy-box token-box">${escapeHtml(flash.plainToken)}</pre>
+    <button class="secondary" type="button" data-copy-target="plain-token">Copiar al portapapeles</button>
+    <h2>Link de instalacion</h2>
+    <pre id="new-install-link" class="copy-box">${escapeHtml(artifacts.installUrl)}</pre>
+    <button class="secondary" type="button" data-copy-target="new-install-link">Copiar al portapapeles</button>
+    <details>
+      <summary>Material tecnico opcional</summary>
+      <h3>Mensaje para usuario</h3><pre class="copy-box">${escapeHtml(artifacts.userMessage)}</pre>
+      <h3>Claude Desktop</h3><pre class="copy-box">${escapeHtml(artifacts.claudeDesktopJson)}</pre>
+      <h3>Claude Code</h3><pre class="copy-box">${escapeHtml(artifacts.claudeCodeCommand)}</pre>
+      <h3>Codex CLI</h3><pre class="copy-box">${escapeHtml(artifacts.codexCommand)}</pre>
+    </details>
+  </section>`;
+}
+
+function renderTokenRow(token: TokenListItem): string {
+  return `<tr>
+    <td><code>${escapeHtml(token.id)}</code></td>
+    <td>${escapeHtml(token.user_id)}</td>
+    <td>${escapeHtml(token.label ?? '—')}</td>
+    <td>${escapeHtml(formatDateForAdmin(token.created_at))}</td>
+    <td>${escapeHtml(formatDateForAdmin(token.expires_at))}</td>
+    <td>${escapeHtml(formatDateForAdmin(token.last_used_at))}</td>
+    <td class="actions">
+      <form method="POST" action="/admin/tokens/${encodeURIComponent(token.id)}/install-link"><button class="secondary" type="submit">Link instalacion</button></form>
+      <form method="POST" action="/admin/tokens/${encodeURIComponent(token.id)}/rotate"><input class="small-input" name="ttl_seconds" type="number" min="1" placeholder="TTL"><button class="secondary" type="submit">Rotar</button></form>
+      <form method="POST" action="/admin/tokens/${encodeURIComponent(token.id)}/revoke"><button class="danger" type="submit">Revocar</button></form>
+    </td>
+  </tr>`;
+}
+
+function formatDateForAdmin(value: string | null): string {
+  return value ? new Date(value).toLocaleString('es-AR') : '—';
+}
+
+function adminCss(): string {
+  return `:root { color-scheme: light dark; font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+body { margin: 0; background: #0f172a; color: #e2e8f0; }
+main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+.login-main { min-height: 100vh; display: grid; place-items: center; padding: 16px; }
+.login-card { width: min(440px, 100%); }
+h1, h2, h3 { margin: 0 0 12px; }
+.page-header { display: flex; align-items: start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.card, .notice { background: #111827; border: 1px solid #334155; border-radius: 16px; padding: 16px; margin: 16px 0; box-shadow: 0 12px 40px rgb(0 0 0 / 0.25); }
+label { display: block; font-size: 0.9rem; color: #cbd5e1; margin: 10px 0 6px; }
+input, button { box-sizing: border-box; border-radius: 10px; border: 1px solid #475569; padding: 12px; font: inherit; }
+input { width: 100%; background: #020617; color: #e2e8f0; }
+button { cursor: pointer; background: #38bdf8; color: #082f49; border: 0; font-weight: 800; }
+form > button, .login-card button { width: 100%; margin-top: 10px; }
+button.secondary { background: #334155; color: #e2e8f0; }
+button.danger { background: #fb7185; color: #450a0a; }
+.grid-form { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); align-items: end; }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; min-width: 880px; }
+th, td { border-bottom: 1px solid #334155; padding: 10px; text-align: left; vertical-align: top; }
+th { color: #93c5fd; font-size: 0.85rem; }
+code { font-size: 0.8rem; color: #bae6fd; word-break: break-all; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; min-width: 320px; }
+.actions form { display: inline-flex; gap: 6px; align-items: center; }
+.actions button { padding: 8px 10px; }
+.small-input { width: 90px; padding: 8px; }
+.copy-box { white-space: pre-wrap; word-break: break-word; background: #020617; border: 1px solid #334155; border-radius: 12px; padding: 12px; color: #e2e8f0; }
+.token-box { border-color: #34d399; background: #022c22; }
+.warning { color: #fde68a; background: #422006; border-color: #f59e0b; }
+.success { color: #bbf7d0; background: #14532d; border-color: #22c55e; }
+.error { color: #fecaca; background: #7f1d1d; border-color: #f87171; }
+.muted { color: #94a3b8; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+details { margin-top: 12px; }`;
 }

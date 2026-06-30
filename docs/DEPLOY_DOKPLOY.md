@@ -19,6 +19,7 @@ WINTERBRAIN_TOKENS=serge_token_sergio:sergio|tools|2592000,marina_token_mariana:
 # Produccion recomendada: usar Postgres en lugar de WINTERBRAIN_TOKENS.
 # WINTERBRAIN_DB_URL=postgres://postgres:password@postgres:5432/winterbrain
 # WINTERBRAIN_ADMIN_TOKEN=<token-admin-largo-y-aleatorio>
+# WINTERBRAIN_ADMIN_COOKIE_SECRET=<secret-largo-para-cookie-admin>
 # WINTERBRAIN_INSTALL_LINK_SECRET=<secret-largo-para-links-de-instalacion-24h>
 ```
 
@@ -36,12 +37,12 @@ Ejemplo de token: `a4f9...e2c1`. Se guarda como `token:userId|scope|ttlSeconds` 
 
 ## Administrar tokens con Postgres
 
-1. Configurar `WINTERBRAIN_DB_URL` y `WINTERBRAIN_ADMIN_TOKEN` en Dokploy.
+1. Configurar `WINTERBRAIN_DB_URL`, `WINTERBRAIN_ADMIN_TOKEN` y `WINTERBRAIN_ADMIN_COOKIE_SECRET` en Dokploy.
    Configurar tambien `WINTERBRAIN_INSTALL_LINK_SECRET` si se quiere copiar links de instalacion desde la lista de tokens.
 2. Abrir `https://brain.winterkpital.com/admin`.
-3. Pegar el admin token. El navegador lo guarda en `localStorage` y lo manda como Bearer solo a `/admin/api/*`.
+3. Pegar el admin token. El servidor crea una cookie `winterbrain_admin` httpOnly, SameSite=Lax y Secure fuera de localhost. La lista de tokens se renderiza del lado servidor, sin depender de JavaScript.
 4. Emitir un token por usuario con `user_id`, `ttl_seconds` y una etiqueta opcional.
-5. Copiar el mensaje de instalacion o el token plano inmediatamente. El token se muestra una sola vez y en la base queda su hash SHA-256; si `WINTERBRAIN_INSTALL_LINK_SECRET` esta configurado, se guarda ademas un JWT de instalacion por 24 horas para poder copiar el link desde la tabla.
+5. Copiar el mensaje de instalacion o el token plano inmediatamente desde el aviso amarillo. El token se muestra una sola vez via cookie flash httpOnly y en la base queda su hash SHA-256; si `WINTERBRAIN_INSTALL_LINK_SECRET` esta configurado, se guarda ademas un JWT de instalacion por 24 horas para poder copiar el link desde la tabla.
 6. Para rotar, usar el boton `Rotate`. El token viejo queda valido 24 horas para no cortar sesiones activas.
 7. Para invalidar ya, usar `Revoke`.
 
@@ -83,6 +84,7 @@ curl -X POST -H "Authorization: Bearer $WINTERBRAIN_ADMIN_TOKEN" \
    BRAIN_DATA_DIR=/app/brain
    WINTERBRAIN_DB_URL=postgres://postgres:<password>@<postgres-host>:5432/winterbrain
    WINTERBRAIN_ADMIN_TOKEN=<token-admin-largo-y-aleatorio>
+   WINTERBRAIN_ADMIN_COOKIE_SECRET=<secret-largo-para-cookie-admin>
    WINTERBRAIN_INSTALL_LINK_SECRET=<secret-largo-para-links-de-instalacion-24h>
    ```
 
