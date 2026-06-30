@@ -11,7 +11,7 @@ Winterbrain supports two transports, selected by `MCP_TRANSPORT`:
 | stdio | `stdio` (default) | Local debug, container launched by the same agent process |
 | HTTP | `http` | Remote access for C-levels without local installs. Dokploy deploy. |
 
-When HTTP is selected, additional env vars apply: `PORT` (default 3131), `WINTERBRAIN_PUBLIC_URL`, `WINTERBRAIN_TOKENS`, `WINTERBRAIN_ALLOW_ANONYMOUS`.
+When HTTP is selected, additional env vars apply: `PORT` (default 3131), `WINTERBRAIN_PUBLIC_URL`, `WINTERBRAIN_TOKENS`, `WINTERBRAIN_DB_URL`, `WINTERBRAIN_ADMIN_TOKEN`, `WINTERBRAIN_ALLOW_ANONYMOUS`.
 
 ## Endpoints (HTTP mode)
 
@@ -22,23 +22,42 @@ When HTTP is selected, additional env vars apply: `PORT` (default 3131), `WINTER
 | `DELETE` | `/mcp` | Terminate an existing session. Requires `mcp-session-id` header. |
 | `GET` | `/health` | Healthcheck for Dokploy. Returns JSON with status and active session count. |
 | `GET` | `/.well-known/oauth-protected-resource` | OAuth 2.0 Protected Resource Metadata. |
+| `GET` | `/admin` | Self-contained token admin page. Available only when `WINTERBRAIN_DB_URL` and `WINTERBRAIN_ADMIN_TOKEN` are set. |
+| `GET` | `/admin/api/health` | Admin API health. Requires `Authorization: Bearer <WINTERBRAIN_ADMIN_TOKEN>`. |
+| `GET` | `/admin/api/tokens` | List active Postgres-backed tokens. Plain tokens are never returned here. |
+| `POST` | `/admin/api/tokens` | Issue a token with `{ "user_id", "ttl_seconds", "label"? }`. Returns `plain_token` once. |
+| `POST` | `/admin/api/tokens/:id/revoke` | Revoke a token. |
+| `POST` | `/admin/api/tokens/:id/rotate` | Rotate a token. Returns the new `plain_token` once. |
 
 ## Auth (HTTP mode)
 
-- Tokens are configured via `WINTERBRAIN_TOKENS`.
-- Format: `token1:userId1|scope1|ttlSeconds,token2:userId2|scope2|ttlSeconds,...`.
-- `ttlSeconds` is optional. Default: 30 days.
+- Preferred production path: set `WINTERBRAIN_DB_URL` to use the Postgres-backed token store.
+- Backwards-compatible path: when `WINTERBRAIN_DB_URL` is empty, tokens are configured via `WINTERBRAIN_TOKENS`.
+- `WINTERBRAIN_TOKENS` format: `token1:userId1|scope1|ttlSeconds,token2:userId2|scope2|ttlSeconds,...`.
+- `ttlSeconds` is optional for `WINTERBRAIN_TOKENS`. Default: 30 days.
 - Example:
 
   ```bash
   WINTERBRAIN_TOKENS=serge_token:sergio|tools|2592000,marina_token:marina|tools|2592000,ceo_token:dario|tools|31536000
   ```
 
-- Without tokens, the server runs in anonymous mode (only safe for local development). Set `WINTERBRAIN_ALLOW_ANONYMOUS=true` to make this explicit.
+- Without `WINTERBRAIN_DB_URL` and without `WINTERBRAIN_TOKENS`, the server runs in anonymous mode (only safe for local development). Set `WINTERBRAIN_ALLOW_ANONYMOUS=true` to make this explicit.
+- Postgres tokens are stored as SHA-256 hashes. The plain token is shown only once on issue or rotation.
+- In Postgres mode, the HTTP verifier reads from an in-memory token snapshot refreshed every 30 seconds. Admin issue/revoke/rotate operations refresh the snapshot immediately.
 - The authenticated `userId` is automatically attached to every tool call as `extra.authInfo.extra.userId`.
 - `whoami` returns the current identity for smoke-testing.
 - When Mariana calls `save_note` over HTTP, the resulting Markdown has `author: marina` automatically.
 - Invalid tokens return `401 Unauthorized` with a `WWW-Authenticate` header.
+
+### Admin token flow
+
+1. Set `WINTERBRAIN_DB_URL` and `WINTERBRAIN_ADMIN_TOKEN`.
+2. Open `/admin` from a browser. The page is standalone HTML/CSS/JS and works on mobile.
+3. Paste the admin token. The page stores it in `localStorage` and uses it only as `Authorization: Bearer <admin-token>` for `/admin/api/*` calls.
+4. Issue a user token by entering `user_id`, `ttl_seconds`, and an optional label.
+5. Copy the plain token immediately. It is never stored in plaintext and will not be shown again.
+6. Use rotate to issue a replacement token for the same user. The previous token stays valid for 24 hours to avoid breaking active sessions.
+7. Use revoke to immediately invalidate a token.
 
 ## Tool contract summary
 

@@ -16,9 +16,14 @@ MCP_TRANSPORT=http
 PORT=3131
 WINTERBRAIN_PUBLIC_URL=https://brain.winterkpital.com
 WINTERBRAIN_TOKENS=serge_token_sergio:sergio|tools|2592000,marina_token_mariana:marina|tools|2592000,ceo_token_dario:dario|tools|31536000
+# Produccion recomendada: usar Postgres en lugar de WINTERBRAIN_TOKENS.
+# WINTERBRAIN_DB_URL=postgres://postgres:password@postgres:5432/winterbrain
+# WINTERBRAIN_ADMIN_TOKEN=<token-admin-largo-y-aleatorio>
 ```
 
 Los tokens se emiten uno por usuario (CEO, CFO, Mariana, Sergio, etc.) y van como `Authorization: Bearer <token>` desde el cliente MCP.
+
+Si `WINTERBRAIN_DB_URL` esta configurado, Winterbrain usa la tabla `winterbrain_tokens` en Postgres y migra el schema al arrancar. Si `WINTERBRAIN_DB_URL` esta vacio, mantiene compatibilidad con `WINTERBRAIN_TOKENS`.
 
 ## Generar tokens seguros
 
@@ -27,6 +32,28 @@ node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
 ```
 
 Ejemplo de token: `a4f9...e2c1`. Se guarda como `token:userId|scope|ttlSeconds` dentro de `WINTERBRAIN_TOKENS`.
+
+## Administrar tokens con Postgres
+
+1. Configurar `WINTERBRAIN_DB_URL` y `WINTERBRAIN_ADMIN_TOKEN` en Dokploy.
+2. Abrir `https://brain.winterkpital.com/admin`.
+3. Pegar el admin token. El navegador lo guarda en `localStorage` y lo manda como Bearer solo a `/admin/api/*`.
+4. Emitir un token por usuario con `user_id`, `ttl_seconds` y una etiqueta opcional.
+5. Copiar el token plano inmediatamente: se muestra una sola vez y en la base solo queda su hash SHA-256.
+6. Para rotar, usar el boton `Rotate`. El token viejo queda valido 24 horas para no cortar sesiones activas.
+7. Para invalidar ya, usar `Revoke`.
+
+API equivalente:
+
+```bash
+curl -H "Authorization: Bearer $WINTERBRAIN_ADMIN_TOKEN" \
+  https://brain.winterkpital.com/admin/api/health
+
+curl -X POST -H "Authorization: Bearer $WINTERBRAIN_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"user_id":"sergio","ttl_seconds":2592000,"label":"Sergio laptop"}' \
+  https://brain.winterkpital.com/admin/api/tokens
+```
 
 ## Opcion 1. Dokploy con GitHub
 
@@ -52,6 +79,8 @@ Ejemplo de token: `a4f9...e2c1`. Se guarda como `token:userId|scope|ttlSeconds` 
    MCP_SERVER_NAME=winterbrain
    MCP_SERVER_VERSION=0.1.0
    BRAIN_DATA_DIR=/app/brain
+   WINTERBRAIN_DB_URL=postgres://postgres:<password>@<postgres-host>:5432/winterbrain
+   WINTERBRAIN_ADMIN_TOKEN=<token-admin-largo-y-aleatorio>
    ```
 
 9. Deploy.
@@ -107,7 +136,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
   | docker run --rm -i -v winterbrain-data:/app/brain winterbrain:local
 ```
 
-Debe devolver cuatro herramientas: `save_note`, `save_chat_summary`, `ingest_meeting`, `ask_brain`.
+Debe devolver seis herramientas: `whoami`, `save_note`, `save_chat_summary`, `ingest_meeting`, `ingest_folder`, `ask_brain`.
 
 ## Backup
 
@@ -120,6 +149,6 @@ docker run --rm -v winterbrain-data:/app/brain -v $PWD:/backup alpine:3.20 \
 
 ## Limitaciones actuales del MVP
 
-- Transporte stdio: cada cliente MCP necesita correr un subproceso local. Para C-levels remotos conviene migrar a HTTP MCP ASAP.
+- En modo sin `WINTERBRAIN_DB_URL`, la rotacion de tokens sigue siendo manual por variable de entorno.
 - `ask_brain` hace busqueda por keyword local; cuando se conecte GBrain pasa a ser hibrida (vector + keyword + grafo).
-- Sin autenticacion: el MVP asume que solo el contenedor expone el servicio.
+- Sin scopes por rol: el MVP asume que todo usuario autenticado puede usar las tools disponibles.

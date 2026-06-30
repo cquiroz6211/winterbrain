@@ -15,6 +15,8 @@ async function main(): Promise<void> {
       port,
       publicUrl,
       tokensRaw: process.env.WINTERBRAIN_TOKENS,
+      dbUrl: process.env.WINTERBRAIN_DB_URL,
+      adminToken: process.env.WINTERBRAIN_ADMIN_TOKEN,
       allowAnonymous,
     });
     return;

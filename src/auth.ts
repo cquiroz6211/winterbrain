@@ -1,3 +1,5 @@
+import { createTokenStore, type TokenStore } from './db.js';
+
 export interface AuthIdentity {
   token: string;
   userId: string;
@@ -5,9 +7,28 @@ export interface AuthIdentity {
   expiresAt: number;
 }
 
+export interface AuthStore {
+  verify(token: string): Promise<AuthIdentity | null>;
+  list(): AuthIdentity[];
+}
+
 export interface AuthStoreOptions {
   raw: string | undefined;
   defaultTtlSeconds: number;
+}
+
+export interface LoadAuthStoreOptions extends AuthStoreOptions {
+  dbUrl: string | undefined;
+  adminToken: string | undefined;
+}
+
+export interface LoadedAuthStore {
+  mode: 'postgres' | 'env';
+  envStore: AuthStore;
+  tokenStore: TokenStore | null;
+  verify(token: string): Promise<AuthIdentity | null>;
+  list(): AuthIdentity[];
+  close(): Promise<void>;
 }
 
 const DEFAULT_SCOPES = ['mcp:tools'];
@@ -33,7 +54,7 @@ export function parseAuthStore({ raw, defaultTtlSeconds }: AuthStoreOptions): {
     const [userId, scopePart, ttlPart] = rest.split('|').map((piece) => piece.trim());
     if (!userId) continue;
 
-    const scopes = scopePart ? scopePart.split(/\s+/).filter(Boolean) : DEFAULT_SCOPES;
+    const scopes = scopePart ? scopePart.split(/\s+/).filter(Boolean).map(normalizeScope) : DEFAULT_SCOPES;
     const ttlSeconds = ttlPart ? Number.parseInt(ttlPart, 10) : defaultTtlSeconds;
     const expiresAt = Number.isFinite(ttlSeconds) && ttlSeconds > 0
       ? Math.floor(Date.now() / 1000) + ttlSeconds
@@ -51,6 +72,40 @@ export function parseAuthStore({ raw, defaultTtlSeconds }: AuthStoreOptions): {
     },
     list: () => Array.from(map.values()),
   };
+}
+
+export async function loadAuthStore({
+  raw,
+  defaultTtlSeconds,
+  dbUrl,
+  adminToken,
+}: LoadAuthStoreOptions): Promise<LoadedAuthStore> {
+  const envStore = parseAuthStore({ raw, defaultTtlSeconds });
+
+  if (dbUrl && dbUrl.trim()) {
+    const tokenStore = await createTokenStore({ dbUrl, adminToken });
+    return {
+      mode: 'postgres',
+      envStore,
+      tokenStore,
+      verify: (token) => tokenStore.verify(token),
+      list: () => envStore.list(),
+      close: () => tokenStore.close(),
+    };
+  }
+
+  return {
+    mode: 'env',
+    envStore,
+    tokenStore: null,
+    verify: (token) => envStore.verify(token),
+    list: () => envStore.list(),
+    close: async () => undefined,
+  };
+}
+
+function normalizeScope(scope: string): string {
+  return scope === 'tools' ? 'mcp:tools' : scope;
 }
 
 export function formatBearerChallenge(resourceUrl: string): string {

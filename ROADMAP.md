@@ -59,6 +59,9 @@ Razon: hoy el gateway hablaba stdio. Cada C-level necesitaba correr un subproces
 - [x] Validacion end-to-end con cliente MCP real: 3 tokens distintos (sergio, marina, dario), author correcto en cada nota.
 - [x] Dockerfile ahora arranca en HTTP mode por default (`MCP_TRANSPORT=http`).
 - [x] `INSTALL_FOR_USERS.md` actualizado con bloques HTTP para Claude Desktop, Claude Code, Codex CLI, OpenCode.
+- [x] Backend de tokens en Postgres (`winterbrain_tokens`) con migracion automatica cuando `WINTERBRAIN_DB_URL` esta configurado.
+- [x] Admin page `/admin` + API `/admin/api/*` para listar, emitir, rotar y revocar tokens sin guardar plaintext.
+- [x] Fallback compatible: `WINTERBRAIN_TOKENS` sigue funcionando cuando no hay `WINTERBRAIN_DB_URL`.
 - [ ] Rate limiting basico (pendiente).
 - [ ] Logs estructurados con request id / user / tool / duracion (pendiente).
 - [ ] Smoke test contra Dokploy real (post-despliegue).
@@ -134,7 +137,7 @@ Preguntas de validacion:
 
 - [ ] Introducir scopes por usuario (`read`, `write`, `admin`) sin segmentar por cliente.
 - [ ] Audit log centralizado: tabla `audit_log` con `who, action, target, when` (hoy vive solo en el frontmatter del Markdown).
-- [ ] Rotacion automatica de tokens (job mensual).
+- [ ] Rotacion automatica de tokens (job mensual). La rotacion manual ya existe en `/admin`.
 - [ ] Rate limiting por usuario (60 req/min default).
 - [ ] Evaluacion de permisos por cliente/startup solo si el equipo lo pide.
 - [ ] Politica de retencion y borrado.
@@ -166,6 +169,7 @@ Preguntas de validacion:
 - **2026-06-26** Decidido: todos pueden ver todo en MVP (sin permisos por cliente/rol). Permisos son Fase 8.
 - **2026-06-26** Decidido: nombre del proyecto `winterbrain`. Repo `cquiroz6211/winterbrain`.
 - **2026-06-26** Descubierto: el usuario objetivo son C-levels (CEO, CFO, director de inversiones). Las herramientas MCP deben hablar lenguaje de negocio, no primitives tecnicos.
+- **2026-06-30** Decidido: `WINTERBRAIN_DB_URL` activa un token store Postgres con hashes SHA-256 y admin page; `WINTERBRAIN_TOKENS` queda como fallback compatible.
 
 ## Backlog de ideas (no priorizadas)
 
