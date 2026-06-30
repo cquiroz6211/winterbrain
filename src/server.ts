@@ -17,6 +17,7 @@ async function main(): Promise<void> {
       tokensRaw: process.env.WINTERBRAIN_TOKENS,
       dbUrl: process.env.WINTERBRAIN_DB_URL,
       adminToken: process.env.WINTERBRAIN_ADMIN_TOKEN,
+      installLinkSecret: process.env.WINTERBRAIN_INSTALL_LINK_SECRET,
       allowAnonymous,
     });
     return;

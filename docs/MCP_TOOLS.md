@@ -11,7 +11,7 @@ Winterbrain supports two transports, selected by `MCP_TRANSPORT`:
 | stdio | `stdio` (default) | Local debug, container launched by the same agent process |
 | HTTP | `http` | Remote access for C-levels without local installs. Dokploy deploy. |
 
-When HTTP is selected, additional env vars apply: `PORT` (default 3131), `WINTERBRAIN_PUBLIC_URL`, `WINTERBRAIN_TOKENS`, `WINTERBRAIN_DB_URL`, `WINTERBRAIN_ADMIN_TOKEN`, `WINTERBRAIN_ALLOW_ANONYMOUS`.
+When HTTP is selected, additional env vars apply: `PORT` (default 3131), `WINTERBRAIN_PUBLIC_URL`, `WINTERBRAIN_TOKENS`, `WINTERBRAIN_DB_URL`, `WINTERBRAIN_ADMIN_TOKEN`, `WINTERBRAIN_INSTALL_LINK_SECRET`, `WINTERBRAIN_ALLOW_ANONYMOUS`.
 
 ## Endpoints (HTTP mode)
 
@@ -26,8 +26,10 @@ When HTTP is selected, additional env vars apply: `PORT` (default 3131), `WINTER
 | `GET` | `/admin/api/health` | Admin API health. Requires `Authorization: Bearer <WINTERBRAIN_ADMIN_TOKEN>`. |
 | `GET` | `/admin/api/tokens` | List active Postgres-backed tokens. Plain tokens are never returned here. |
 | `POST` | `/admin/api/tokens` | Issue a token with `{ "user_id", "ttl_seconds", "label"? }`. Returns `plain_token` once. |
+| `GET` | `/admin/api/tokens/:id/install-link` | Return a 24h signed `/install/<jwt>` link for a token issued while `WINTERBRAIN_INSTALL_LINK_SECRET` was set. |
 | `POST` | `/admin/api/tokens/:id/revoke` | Revoke a token. |
 | `POST` | `/admin/api/tokens/:id/rotate` | Rotate a token. Returns the new `plain_token` once. |
+| `GET` | `/install/:tokenOrJwt` | Public tokenized install page. Accepts a direct plain token or a signed install JWT. |
 
 ## Auth (HTTP mode)
 
@@ -43,6 +45,7 @@ When HTTP is selected, additional env vars apply: `PORT` (default 3131), `WINTER
 
 - Without `WINTERBRAIN_DB_URL` and without `WINTERBRAIN_TOKENS`, the server runs in anonymous mode (only safe for local development). Set `WINTERBRAIN_ALLOW_ANONYMOUS=true` to make this explicit.
 - Postgres tokens are stored as SHA-256 hashes. The plain token is shown only once on issue or rotation.
+- Install links are bearer-token links. `/install/<plain_token>` works directly without extra configuration. When `WINTERBRAIN_INSTALL_LINK_SECRET` is configured, the admin API can return a signed `/install/<jwt>` link that contains the plain token claim and expires after 24 hours.
 - In Postgres mode, the HTTP verifier reads from an in-memory token snapshot refreshed every 30 seconds. Admin issue/revoke/rotate operations refresh the snapshot immediately.
 - The authenticated `userId` is automatically attached to every tool call as `extra.authInfo.extra.userId`.
 - `whoami` returns the current identity for smoke-testing.
@@ -56,8 +59,18 @@ When HTTP is selected, additional env vars apply: `PORT` (default 3131), `WINTER
 3. Paste the admin token. The page stores it in `localStorage` and uses it only as `Authorization: Bearer <admin-token>` for `/admin/api/*` calls.
 4. Issue a user token by entering `user_id`, `ttl_seconds`, and an optional label.
 5. Copy the plain token immediately. It is never stored in plaintext and will not be shown again.
-6. Use rotate to issue a replacement token for the same user. The previous token stays valid for 24 hours to avoid breaking active sessions.
-7. Use revoke to immediately invalidate a token.
+6. For non-technical users, copy the generated Spanish install message or use the per-row "Copiar link de instalación" button. The install page shows copy buttons for Claude Desktop, Claude Code, and Codex CLI without exposing backend jargon.
+7. Use rotate to issue a replacement token for the same user. The previous token stays valid for 24 hours to avoid breaking active sessions.
+8. Use revoke to immediately invalidate a token.
+
+### Install link flow
+
+1. Admin issues or rotates a token from `/admin`.
+2. The page shows a Spanish message ready for WhatsApp/Slack with `/install/<plain_token>` plus copyable blocks for Claude Desktop, Claude Code, and Codex CLI.
+3. If `WINTERBRAIN_INSTALL_LINK_SECRET` is set, the token row can copy `/install/<jwt>`. The JWT is HS256-signed, includes the plain token in the `token` claim, and expires in 24 hours.
+4. The user opens the link and clicks the copy button for their app.
+
+Security note: an install link grants the same access as the bearer token inside it. Treat it like a password and revoke or rotate the token after setup if the link may have been forwarded.
 
 ## Tool contract summary
 

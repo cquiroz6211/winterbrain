@@ -127,6 +127,7 @@ Preguntas de validacion:
 ## Fase 7 — Adopcion C-level
 
 - [ ] Onboarding 1-a-1 con cada C-level (Sergio, Mariana, Don Dario, CFO).
+- [x] Admin genera mensaje de instalacion en espanol y pagina `/install/<token>` con botones de copiado para Claude Desktop, Claude Code y Codex CLI.
 - [ ] Demo en vivo cargando una reunion real desde Claude/Codex.
 - [ ] Mini-guia de frases naturales (1 pagina, no mas).
 - [ ] Cuestionario de adopcion a las 2 semanas.
@@ -135,6 +136,7 @@ Preguntas de validacion:
 
 ## Fase 8 — Evolucion del modelo de acceso
 
+- [ ] Mantener honesto el alcance: los links de instalacion simplifican onboarding, pero no agregan scopes ni permisos finos.
 - [ ] Introducir scopes por usuario (`read`, `write`, `admin`) sin segmentar por cliente.
 - [ ] Audit log centralizado: tabla `audit_log` con `who, action, target, when` (hoy vive solo en el frontmatter del Markdown).
 - [ ] Rotacion automatica de tokens (job mensual). La rotacion manual ya existe en `/admin`.
@@ -170,6 +172,7 @@ Preguntas de validacion:
 - **2026-06-26** Decidido: nombre del proyecto `winterbrain`. Repo `cquiroz6211/winterbrain`.
 - **2026-06-26** Descubierto: el usuario objetivo son C-levels (CEO, CFO, director de inversiones). Las herramientas MCP deben hablar lenguaje de negocio, no primitives tecnicos.
 - **2026-06-30** Decidido: `WINTERBRAIN_DB_URL` activa un token store Postgres con hashes SHA-256 y admin page; `WINTERBRAIN_TOKENS` queda como fallback compatible.
+- **2026-06-30** Mejora: admin page emite mensajes de instalacion para C-levels y `/install/<token>`; los links firmados requieren `WINTERBRAIN_INSTALL_LINK_SECRET` y expiran en 24h. No cambia el modelo de scopes.
 
 ## Backlog de ideas (no priorizadas)
 

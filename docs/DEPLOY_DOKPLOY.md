@@ -19,6 +19,7 @@ WINTERBRAIN_TOKENS=serge_token_sergio:sergio|tools|2592000,marina_token_mariana:
 # Produccion recomendada: usar Postgres en lugar de WINTERBRAIN_TOKENS.
 # WINTERBRAIN_DB_URL=postgres://postgres:password@postgres:5432/winterbrain
 # WINTERBRAIN_ADMIN_TOKEN=<token-admin-largo-y-aleatorio>
+# WINTERBRAIN_INSTALL_LINK_SECRET=<secret-largo-para-links-de-instalacion-24h>
 ```
 
 Los tokens se emiten uno por usuario (CEO, CFO, Mariana, Sergio, etc.) y van como `Authorization: Bearer <token>` desde el cliente MCP.
@@ -36,10 +37,11 @@ Ejemplo de token: `a4f9...e2c1`. Se guarda como `token:userId|scope|ttlSeconds` 
 ## Administrar tokens con Postgres
 
 1. Configurar `WINTERBRAIN_DB_URL` y `WINTERBRAIN_ADMIN_TOKEN` en Dokploy.
+   Configurar tambien `WINTERBRAIN_INSTALL_LINK_SECRET` si se quiere copiar links de instalacion desde la lista de tokens.
 2. Abrir `https://brain.winterkpital.com/admin`.
 3. Pegar el admin token. El navegador lo guarda en `localStorage` y lo manda como Bearer solo a `/admin/api/*`.
 4. Emitir un token por usuario con `user_id`, `ttl_seconds` y una etiqueta opcional.
-5. Copiar el token plano inmediatamente: se muestra una sola vez y en la base solo queda su hash SHA-256.
+5. Copiar el mensaje de instalacion o el token plano inmediatamente. El token se muestra una sola vez y en la base queda su hash SHA-256; si `WINTERBRAIN_INSTALL_LINK_SECRET` esta configurado, se guarda ademas un JWT de instalacion por 24 horas para poder copiar el link desde la tabla.
 6. Para rotar, usar el boton `Rotate`. El token viejo queda valido 24 horas para no cortar sesiones activas.
 7. Para invalidar ya, usar `Revoke`.
 
@@ -81,6 +83,7 @@ curl -X POST -H "Authorization: Bearer $WINTERBRAIN_ADMIN_TOKEN" \
    BRAIN_DATA_DIR=/app/brain
    WINTERBRAIN_DB_URL=postgres://postgres:<password>@<postgres-host>:5432/winterbrain
    WINTERBRAIN_ADMIN_TOKEN=<token-admin-largo-y-aleatorio>
+   WINTERBRAIN_INSTALL_LINK_SECRET=<secret-largo-para-links-de-instalacion-24h>
    ```
 
 9. Deploy.

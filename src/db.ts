@@ -32,6 +32,8 @@ export interface TokenVerificationSnapshotItem {
 export interface TokenStore {
   list(): Promise<TokenListItem[]>;
   issue(userId: string, ttlSeconds?: number | null, label?: string): Promise<string>;
+  saveInstallLinkToken(id: string, token: string, expiresAt: Date): Promise<void>;
+  getInstallLinkToken(id: string): Promise<string | null>;
   revoke(id: string): Promise<boolean>;
   rotate(id: string, ttlSeconds?: number | null): Promise<string | null>;
   verify(plainToken: string): Promise<AuthIdentity | null>;
@@ -97,6 +99,31 @@ export async function createTokenStore({ dbUrl }: CreateTokenStoreOptions): Prom
     },
 
     issue,
+
+    saveInstallLinkToken: async (id: string, token: string, expiresAt: Date) => {
+      await pool.query(
+        `UPDATE winterbrain_tokens
+         SET install_link_token = $2,
+             install_link_expires_at = $3
+         WHERE id = $1
+           AND revoked_at IS NULL`,
+        [id, token, expiresAt],
+      );
+    },
+
+    getInstallLinkToken: async (id: string) => {
+      const result = await pool.query<{ install_link_token: string }>(
+        `SELECT install_link_token
+         FROM winterbrain_tokens
+         WHERE id = $1
+           AND install_link_token IS NOT NULL
+           AND install_link_expires_at > now()
+           AND (revoked_at IS NULL OR revoked_at > now())
+           AND (expires_at IS NULL OR expires_at > now())`,
+        [id],
+      );
+      return result.rows[0]?.install_link_token ?? null;
+    },
 
     revoke: async (id: string) => {
       const result = await pool.query(
@@ -225,8 +252,16 @@ async function migrate(pool: pg.Pool): Promise<void> {
       created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
       expires_at    TIMESTAMPTZ,
       revoked_at    TIMESTAMPTZ,
-      last_used_at  TIMESTAMPTZ
+      last_used_at  TIMESTAMPTZ,
+      install_link_token TEXT,
+      install_link_expires_at TIMESTAMPTZ
     );
+
+    ALTER TABLE winterbrain_tokens
+      ADD COLUMN IF NOT EXISTS install_link_token TEXT;
+
+    ALTER TABLE winterbrain_tokens
+      ADD COLUMN IF NOT EXISTS install_link_expires_at TIMESTAMPTZ;
 
     CREATE INDEX IF NOT EXISTS winterbrain_tokens_user_active_idx
       ON winterbrain_tokens(user_id) WHERE revoked_at IS NULL;
